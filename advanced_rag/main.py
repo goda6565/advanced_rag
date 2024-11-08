@@ -91,6 +91,7 @@ def reciprocal_rank_fusion(retriever_outputs: list[list[Document]], k: int = 60)
     ranked = sorted(content_score_mapping.items(), key=lambda x: x[1], reverse=True)
     return [content for content, _ in ranked]
 
+""""""
 
 # 質問プロンプトテンプレート
 system_prompt = (

@@ -59,3 +59,25 @@ def reciprocal_rank_fusion(retriever_outputs: list[list[Document]], k: int = 60)
 
 """"""
 ```
+### Hybrid Search
+```
+""" 検索器（Hybrid Search） """
+
+faiss_retriever = retriever.with_config(
+    {"run_name": "faiss_retriever"}
+)
+
+bm25_retriever = BM25Retriever.from_documents(split_documents).with_config(
+    {"run_name": "bm25_retriever"}
+)
+
+hybrid_retriever = (
+    RunnableParallel({
+        "faiss_documents": faiss_retriever,
+        "bm25_documents": bm25_retriever,
+    })
+    | (lambda x: x["faiss_documents"] + x["bm25_documents"])
+)
+
+""""""
+```

@@ -4,13 +4,16 @@ from langchain_openai import ChatOpenAI
 from langchain_openai import OpenAIEmbeddings
 from langchain_community.document_loaders import GitLoader
 from langchain_community.vectorstores import FAISS
+from langchain_community.retrievers import BM25Retriever
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.runnables import RunnablePassthrough
-from langchain_core.documents import Document
+from langchain_core.runnables import RunnablePassthrough, RunnableParallel
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-from pydantic import BaseModel, Field
+""" 手法のインポート """
+from advanced_rag.method import multi_query_chain
+from advanced_rag.method import reciprocal_rank_fusion
+
 load_dotenv()
 
 def file_filter(file_path: str) -> bool:
@@ -37,61 +40,28 @@ embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
 vectorstore = FAISS.from_documents(split_documents, embeddings)
 retriever = vectorstore.as_retriever()
 
+
+""" 検索器（Hybrid Search） """
+
+faiss_retriever = retriever.with_config(
+    {"run_name": "faiss_retriever"}
+)
+
+bm25_retriever = BM25Retriever.from_documents(split_documents).with_config(
+    {"run_name": "bm25_retriever"}
+)
+
+hybrid_retriever = (
+    RunnableParallel({
+        "faiss_documents": faiss_retriever,
+        "bm25_documents": bm25_retriever,
+    })
+    | (lambda x: x["faiss_documents"] + x["bm25_documents"])
+)
+
+""""""
+
 model = ChatOpenAI(model="gpt-4o-mini", streaming=True)
-
-""" HyDE """
-
-hypothetical_prompt = ChatPromptTemplate.from_template("""
-Write one sentence answering the following question in English
-\n\n
-question: {question}
-""")
-
-# HyDE chain
-hypothetical_chain = hypothetical_prompt | model | StrOutputParser()
-
-""""""
-
-""" 複数の検索クリエ """
-
-class QueryGenerationOutput(BaseModel):
-    queries: list[str] = Field(..., description="検索クリエのリスト")
-    
-query_generation_prompt = ChatPromptTemplate.from_template("""
-Generate three different search queries to retrieve relevant documents from the vector database for a question in English. 
-The goal is to provide multiple views of the user's question to overcome the limitations of distance-based similarity search.
-\n\n
-question: {question}
-""")
-
-query_generation_chain = query_generation_prompt | model.with_structured_output(QueryGenerationOutput) | (lambda x: x.queries)
-
-""""""
-""" After Retrieval """
-
-""" RAG-FUSION """
-
-def reciprocal_rank_fusion(retriever_outputs: list[list[Document]], k: int = 60) -> list[str]:
-    # 各ドキュメントのコンテンツとそのスコアを保持する辞書
-    content_score_mapping = {}
-    
-    # 検索クリエごとにループ
-    for docs in retriever_outputs:
-        # 各クリエのドキュメントごとにループ
-        for rank, doc in enumerate(docs):
-            content = doc.page_content
-            
-            # 初めて登場したコンテンツの場合は、0で初期化
-            if content not in content_score_mapping:
-                content_score_mapping[content] = 0
-                
-            content_score_mapping[content] += 1 / (rank + k)
-            
-    # スコアの大きい順にソート
-    ranked = sorted(content_score_mapping.items(), key=lambda x: x[1], reverse=True)
-    return [content for content, _ in ranked]
-
-""""""
 
 # 質問プロンプトテンプレート
 system_prompt = (
@@ -113,7 +83,7 @@ prompt = ChatPromptTemplate.from_messages(
 # 実行チェーンの構築
 runnable = (
     {
-        "context": query_generation_chain | retriever.map() | reciprocal_rank_fusion,
+        "context": multi_query_chain(model) | hybrid_retriever.map() | reciprocal_rank_fusion,
         "question": RunnablePassthrough(),
     }
     | prompt
